@@ -262,6 +262,15 @@ impl FrameParser {
         let spare = (self.buf.capacity() - len).min(needed);
         self.spare = spare;
 
+        // FIXME: a `&mut [u8]` over uninitialised capacity is undefined
+        // behaviour.
+        // Nothing goes wrong today because both callers only write into the
+        // slice (recvmsg and Read::read), and commit exposes exactly the prefix
+        // they report writing, so no uninitialised byte ever becomes a value.
+        // Migrate to `&mut [MaybeUninit<u8>]` once `Read::read_buf` and
+        // BorrowedBuf (rust#78485) are stable and IoSliceMut accepts
+        // uninitialised memory.
+        //
         // SAFETY: the slice lies inside the allocation and starts after the
         // initialised prefix. The caller only writes it, and commit bounds the
         // part that can be read by how much the caller says it wrote.
