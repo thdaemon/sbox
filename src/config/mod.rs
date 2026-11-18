@@ -157,8 +157,8 @@ impl Config {
     /// the configuration, so this answers the question instead of leaving each
     /// caller to spell the fallbacks out again.
     pub fn sandbox_dir(&self) -> PathBuf {
-        if !self.sandbox.dir.as_os_str().is_empty() {
-            return self.dirs.expand(&self.sandbox.dir.to_string_lossy());
+        if !self.sandbox.dir.is_empty() {
+            return self.dirs.expand(&self.sandbox.dir);
         }
 
         match &self.main.sandbox_root {
@@ -367,7 +367,7 @@ mod tests {
     #[test]
     fn the_sandbox_directory_defaults_under_the_home() {
         let config = load("dir-default", &[], &["run", "work"]);
-        assert!(config.sandbox.dir.as_os_str().is_empty());
+        assert!(config.sandbox.dir.is_empty());
         assert_eq!(
             config.sandbox_dir(),
             config.dirs().home().join("Sandbox/work")

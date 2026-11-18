@@ -9,7 +9,6 @@ use anyhow::Result;
 use clap::ValueEnum;
 use serde::Deserialize;
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 
 const DEFAULT_SESSION_RULES: &[&str] = &[
     "talk=org.freedesktop.DBus",
@@ -274,7 +273,8 @@ impl<'de> Deserialize<'de> for EnvValue {
 #[serde(deny_unknown_fields, default)]
 pub(crate) struct SandboxConfig {
     pub hostname: Hostname,
-    pub dir: PathBuf,
+    /// The in-sandbox $HOME as written; `~` is expanded when it is used.
+    pub dir: String,
     pub command: Vec<String>,
     pub nested: bool,
     pub fakeroot: bool,
@@ -290,7 +290,7 @@ impl Default for SandboxConfig {
     fn default() -> SandboxConfig {
         SandboxConfig {
             hostname: Hostname::Auto,
-            dir: PathBuf::new(),
+            dir: String::new(),
             command: default_command(),
             nested: false,
             fakeroot: false,

@@ -16,7 +16,6 @@
 use crate::config::{Bind, BindMode, Config, Hostname, PkiMode};
 use crate::name::Name;
 use clap::{Args, Parser, Subcommand};
-use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -288,7 +287,7 @@ impl Cli {
             config.no_attach = args.no_attach;
 
             if let Some(dir) = &args.sandbox_dir {
-                config.sandbox.dir = PathBuf::from(dir);
+                config.sandbox.dir = dir.clone();
             }
 
             if args.real_hostname {
