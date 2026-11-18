@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Eric Tian <thxdaemon@gmail.com>
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! The language shared by the client and the sandbox daemon.
 //!
 //! This module is pure: it turns messages into bytes and bytes into messages.

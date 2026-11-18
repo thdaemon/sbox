@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Eric Tian <thxdaemon@gmail.com>
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! The epoll instance, and the trait that says what a registered descriptor
 //! carries along with it.
 //!

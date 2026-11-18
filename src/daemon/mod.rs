@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Eric Tian <thxdaemon@gmail.com>
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! The sandbox daemon: PID 1 of the sandbox and the only process that talks to
 //! the control socket.
 //!

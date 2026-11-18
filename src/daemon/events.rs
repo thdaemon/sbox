@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Eric Tian <thxdaemon@gmail.com>
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! What an epoll event in the daemon is about.
 //!
 //! The sandbox has one descriptor per session, so the watched set can grow;

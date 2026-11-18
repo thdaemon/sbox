@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Eric Tian <thxdaemon@gmail.com>
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Bringing a sandbox up: the parent side that forks and waits, the child side
 //! that claims the name, enters the namespaces and becomes PID 1, and the pipe
 //! they report over.

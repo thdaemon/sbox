@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Eric Tian <thxdaemon@gmail.com>
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Filtered dbus proxies, started outside the sandbox and bound into it.
 //!
 //! The caller resolves the policy: upstream address, socket path and the final

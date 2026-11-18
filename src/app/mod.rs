@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Eric Tian <thxdaemon@gmail.com>
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! What a parsed command does.
 //!
 //! cli.rs parses the command line into Cmd, configuration turns it into the

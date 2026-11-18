@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Eric Tian <thxdaemon@gmail.com>
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! The client side of the control socket.
 //!
 //! It sends one request, reads one reply and hands the attach descriptors back

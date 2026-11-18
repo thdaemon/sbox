@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Eric Tian <thxdaemon@gmail.com>
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Construction of the sandbox mount tree.
 //!
 //! The tree is built from detached mounts (open_tree / fsmount) that are

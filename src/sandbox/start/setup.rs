@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Eric Tian <thxdaemon@gmail.com>
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Host-side setup process: claims the sandbox name, enters the namespaces and
 //! leaves the daemon behind.
 

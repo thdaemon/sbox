@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Eric Tian <thxdaemon@gmail.com>
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Command line parsing.
 //!
 //! Every invocation names an action: `run` creates the sandbox if it is not

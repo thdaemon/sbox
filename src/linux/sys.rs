@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Eric Tian <thxdaemon@gmail.com>
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Thin wrappers around the syscalls the sandbox needs.
 
 use anyhow::{Context, Result, bail};

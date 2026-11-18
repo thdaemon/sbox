@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Eric Tian <thxdaemon@gmail.com>
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Build the sandbox root and apply its configured mounts.
 //!
 //! Everything the host session provides is mounted and described in the same

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Eric Tian <thxdaemon@gmail.com>
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Thin wrappers over the Linux interfaces sbox needs, with no policy of their
 //! own: mounts in fs, event loops in epoll, namespaces, identity and process
 //! control in sys.

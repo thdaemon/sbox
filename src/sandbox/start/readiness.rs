@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Eric Tian <thxdaemon@gmail.com>
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! The readiness pipe back to whoever asked for a sandbox.
 //!
 //! The setup process holds the write end and reports exactly once: 'R' the

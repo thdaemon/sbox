@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Eric Tian <thxdaemon@gmail.com>
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Attach: join an existing sandbox and run a command on the caller's tty.
 //!
 //! The sandbox hands out the descriptors of its namespaces over the control

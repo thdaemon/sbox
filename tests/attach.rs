@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Eric Tian <thxdaemon@gmail.com>
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! End to end test of the supervisor/session path.
 //!
 //! The tests create real user and mount namespaces, so the host has to allow
