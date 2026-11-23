@@ -378,10 +378,6 @@ impl Default for ResponseParser {
 }
 
 /// Incremental decoder for requests.
-///
-/// Requests carry no payload, so one with a non-zero size is rejected as soon
-/// as its header arrives, without waiting for the bytes it claims. The daemon
-/// uses the same spare_mut/commit path as the client.
 pub(crate) struct RequestParser {
     inner: FrameParser,
 }
