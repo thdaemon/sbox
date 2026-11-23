@@ -7,17 +7,19 @@
 //! only where the sandboxes live (sandbox_root). global.toml and
 //! sandbox.d/<name>.toml describe the sandboxes themselves.
 //!
-//! A Config is built in two steps. Config::load reads the XDG directories and
-//! config.toml; Config::load_sandbox merges the sandbox files as TOML values
-//! and deserializes the result once. The caller then applies the command line.
-//! Defaults that depend on the invocation -- the derived hostname, the sandbox
-//! directory, the built-in dbus rules -- belong to the layer that uses them.
+//! A BaseConfig is built from the XDG directories and config.toml and names no
+//! sandbox. BaseConfig::load_sandbox merges the sandbox files as TOML values,
+//! deserializes the result once, and consumes the base: the Config it returns
+//! carries the name and the settings, so a sandbox configuration cannot exist
+//! without one. The caller then applies the command line. Defaults that depend
+//! on the invocation -- the derived hostname, the sandbox directory, the
+//! built-in dbus rules -- belong to the layer that uses them.
 
 mod dirs;
 mod load;
 mod model;
 
-pub(crate) use dirs::{CONTROL_SOCKET, XdgDirs};
+pub(crate) use dirs::{CONTROL_SOCKET, SandboxPaths, XdgDirs};
 pub(crate) use model::{Bind, BindMode, EnvValue, Hostname, PkiMode};
 
 use crate::config::model::MainConfig;
@@ -33,63 +35,77 @@ pub(crate) const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// the later layer.
 const SANDBOX_CONFIG_APPEND: &[&str] = &["bind", "dbus.session", "dbus.system"];
 
-/// The configuration of one invocation: where sbox keeps things, and one
-/// sandbox's resolved settings.
-///
-/// The name is identity, not a setting: it is set when the sandbox
-/// configuration is loaded, except for `list`, which names none. The sandbox
-/// settings are whatever the files and the command line say; the layer that
-/// uses each setting applies the defaults that depend on the invocation.
+/// The program's own configuration: the directories sbox works with and
+/// config.toml. It names no sandbox and holds no sandbox settings.
 #[derive(Debug, Clone)]
-pub(crate) struct Config {
+pub(crate) struct BaseConfig {
     pub dirs: XdgDirs,
     main: MainConfig,
-    pub name: Option<Name>,
+    /// Whether the invocation asked for the resolved settings to be printed.
     pub verbose: bool,
-    pub keep: bool,
-    pub no_attach: bool,
-    pub sandbox: SandboxConfig,
 }
 
-impl Config {
+impl BaseConfig {
     /// Resolve the XDG directories and read config.toml, the program
     /// configuration.
-    pub fn load() -> Result<Config> {
-        Config::at(XdgDirs::from_env())
+    pub fn load() -> Result<BaseConfig> {
+        BaseConfig::at(XdgDirs::from_env())
     }
 
-    fn at(dirs: XdgDirs) -> Result<Config> {
+    fn at(dirs: XdgDirs) -> Result<BaseConfig> {
         let path = dirs.main_config_file();
         let main: MainConfig = ConfigLoader::new(&[]).layer(&path)?.finish()?;
 
-        Ok(Config {
+        Ok(BaseConfig {
             dirs,
             main,
-            name: None,
             verbose: false,
-            keep: false,
-            no_attach: false,
-            sandbox: SandboxConfig::default(),
         })
     }
 
     /// Merge global.toml and sandbox.d/<name>.toml at the TOML value level,
-    /// deserialize the result once, and adopt both it and the name as this
-    /// invocation's state.
-    pub fn load_sandbox(&mut self, name: Name) -> Result<()> {
+    /// deserialize the result once, and consume the base into this
+    /// invocation's configuration.
+    pub fn load_sandbox(self, name: Name) -> Result<Config> {
         let sandbox = ConfigLoader::new(SANDBOX_CONFIG_APPEND)
             .layer(&self.dirs.global_config_file())?
             .layer(&self.dirs.sandbox_config_file(name.as_str()))?
             .finish()
             .with_context(|| format!("loading the configuration for '{name}'"))?;
 
-        self.name = Some(name);
-        self.sandbox = sandbox;
-        Ok(())
+        Ok(Config {
+            base: self,
+            name,
+            keep: false,
+            no_attach: false,
+            sandbox,
+        })
     }
 
+    fn validate(&self) -> Result<()> {
+        self.main.validate()
+    }
+}
+
+/// One invocation's configuration: the base it was built from, the sandbox it
+/// names, and that sandbox's resolved settings. The name is identity, not a
+/// setting, and every Config has one.
+///
+/// The sandbox settings are whatever the files and the command line say; the
+/// layer that uses each setting applies the defaults that depend on the
+/// invocation.
+#[derive(Debug, Clone)]
+pub(crate) struct Config {
+    pub base: BaseConfig,
+    pub name: Name,
+    pub keep: bool,
+    pub no_attach: bool,
+    pub sandbox: SandboxConfig,
+}
+
+impl Config {
     pub fn validate(&self) -> Result<()> {
-        self.main.validate()?;
+        self.base.validate()?;
         self.sandbox.validate()?;
         self.check_paths()
     }
@@ -99,23 +115,19 @@ impl Config {
     /// and working directory behind, so a relative path would mean something
     /// else there.
     fn check_paths(&self) -> Result<()> {
-        if self.name.is_none() {
-            return Ok(());
-        }
-
         let dir = self.sandbox_dir();
         if !dir.is_absolute() {
             bail!("the sandbox directory '{}' must be absolute", dir.display());
         }
 
         for bind in &self.sandbox.binds {
-            let source = self.dirs.expand(&bind.source);
+            let source = self.dirs().expand(&bind.source);
             if !source.is_absolute() {
                 bail!("the bind source '{}' must be absolute", bind.source);
             }
 
             if let Some(dest) = &bind.dest {
-                let expanded = self.dirs.expand(dest);
+                let expanded = self.dirs().expand(dest);
                 if !expanded.is_absolute() {
                     bail!("the bind destination '{}' must be absolute", dest);
                 }
@@ -127,19 +139,26 @@ impl Config {
 
     /// The directories sbox works with.
     pub fn dirs(&self) -> &XdgDirs {
-        &self.dirs
+        &self.base.dirs
     }
 
-    /// The sandbox name. Every command except list names one, so this is set
-    /// whenever a sandbox is involved.
+    /// The paths that belong to this sandbox.
+    pub fn paths(&self) -> SandboxPaths<'_> {
+        self.base.dirs.paths(&self.name)
+    }
+
+    /// The sandbox name.
     pub fn name(&self) -> &Name {
-        self.name
-            .as_ref()
-            .expect("the sandbox name is set before it is read")
+        &self.name
+    }
+
+    /// The base this configuration was built from.
+    pub fn into_base(self) -> BaseConfig {
+        self.base
     }
 
     pub fn verbose(&self) -> bool {
-        self.verbose
+        self.base.verbose
     }
 
     /// Whether run was asked to start the sandbox without opening a session.
@@ -158,20 +177,20 @@ impl Config {
     /// caller to spell the fallbacks out again.
     pub fn sandbox_dir(&self) -> PathBuf {
         if !self.sandbox.dir.is_empty() {
-            return self.dirs.expand(&self.sandbox.dir);
+            return self.dirs().expand(&self.sandbox.dir);
         }
 
-        match &self.main.sandbox_root {
+        match &self.base.main.sandbox_root {
             Some(root) => {
-                self.dirs
+                self.dirs()
                     .expand(&format!("{}/{}", root.trim_end_matches('/'), self.name()))
             }
-            None => self.dirs.home().join("Sandbox").join(self.name().as_str()),
+            None => self
+                .dirs()
+                .home()
+                .join("Sandbox")
+                .join(self.name().as_str()),
         }
-    }
-
-    pub fn state_dir(&self) -> PathBuf {
-        self.dirs.state_dir(self.name().as_str())
     }
 }
 
@@ -180,14 +199,18 @@ impl Config {
     /// A configuration over a throwaway home, for tests that do not need a
     /// config.toml.
     pub fn under(home: impl Into<PathBuf>) -> Config {
-        Config::at(XdgDirs::under(home)).expect("a fresh home holds no configuration")
+        let name = Name::parse("test").expect("a valid test name");
+
+        BaseConfig::at(XdgDirs::under(home))
+            .and_then(|base| base.load_sandbox(name))
+            .expect("a fresh home holds no configuration")
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Config, EnvValue, Hostname, PkiMode, XdgDirs};
-    use crate::cli::Cli;
+    use super::{BaseConfig, Config, EnvValue, Hostname, PkiMode, XdgDirs};
+    use crate::cli::{Cli, Cmd};
     use clap::Parser;
 
     fn cli(args: &[&str]) -> Cli {
@@ -212,11 +235,16 @@ mod tests {
         for (relative, text) in files {
             write(&dirs, relative, text);
         }
-        let mut config = Config::at(dirs).expect("load");
         let cli = cli(args);
-        if let Some(name) = cli.sandbox_name() {
-            config.load_sandbox(name.clone()).expect("load sandbox");
-        }
+        let name = match cli.action() {
+            Cmd::Run(args) => args.name.clone(),
+            Cmd::Attach(args) => args.name.clone(),
+            other => panic!("the test command names a sandbox: {other:?}"),
+        };
+        let mut config = BaseConfig::at(dirs)
+            .expect("load")
+            .load_sandbox(name)
+            .expect("load sandbox");
         cli.apply(&mut config);
         config
     }
@@ -464,24 +492,25 @@ mod tests {
     fn unknown_keys_are_rejected() {
         let dirs = xdg("unknown");
         write(&dirs, "sandbox.d/work.toml", "x11 = true\n");
-        let mut config = Config::at(dirs).expect("load");
+        let base = BaseConfig::at(dirs).expect("load");
         let name = crate::name::Name::parse("work").expect("name");
-        assert!(config.load_sandbox(name).is_err());
+        assert!(base.load_sandbox(name).is_err());
     }
 
     #[test]
     fn an_empty_sandbox_root_is_rejected() {
         let dirs = xdg("empty");
         write(&dirs, "config.toml", "sandbox_root = \"  \"\n");
-        let config = Config::at(dirs).expect("load");
-        let error = config.validate().expect_err("rejected");
+        let base = BaseConfig::at(dirs).expect("load");
+        let error = base.validate().expect_err("rejected");
         assert!(error.to_string().contains("sandbox_root"), "{error:#}");
     }
 
     #[test]
-    fn a_name_is_only_needed_for_sandbox_commands() {
+    fn the_base_config_ignores_the_sandbox_files() {
         let dirs = xdg("list");
-        let config = Config::at(dirs).expect("load");
-        assert!(config.name.is_none());
+        write(&dirs, "sandbox.d/broken.toml", "x11 = true\n");
+        let base = BaseConfig::at(dirs).expect("load");
+        base.validate().expect("only config.toml is read");
     }
 }

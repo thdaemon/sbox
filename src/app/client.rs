@@ -7,13 +7,37 @@
 //! to the caller. The daemon side lives in daemon; protocol.rs only turns
 //! messages into bytes.
 
+use crate::name::Name;
 use crate::protocol::{AttachReply, Request, Response, ResponseParser, StatusReply};
 use anyhow::{Context, Result, bail};
 use nix::sys::socket::{ControlMessageOwned, MsgFlags, recvmsg};
 use std::io::{IoSliceMut, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
-use std::time::Duration;
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
+
+/// How often to look again while the daemon is still publishing its socket.
+const CONNECT_INTERVAL: Duration = Duration::from_millis(20);
+
+/// Why the control socket could not be reached. Only the first is worth
+/// retrying: the sandbox is still coming up.
+#[derive(Debug)]
+pub(super) enum ConnectError {
+    NotRunning,
+    Io(std::io::Error),
+}
+
+impl ConnectError {
+    pub fn describe(self, name: &Name) -> anyhow::Error {
+        match self {
+            ConnectError::NotRunning => anyhow::anyhow!("sandbox '{name}' is not running"),
+            ConnectError::Io(e) => {
+                anyhow::Error::new(e).context(format!("connecting to sandbox '{name}'"))
+            }
+        }
+    }
+}
 
 /// A client side of the control socket: one request, one reply, decoded.
 ///
@@ -35,11 +59,44 @@ pub(super) struct Attached {
 
 impl Client {
     /// Wrap a connected control socket and put a time bound on every reply read.
-    pub fn new(stream: UnixStream, read_timeout: Duration) -> Result<Client> {
-        stream
-            .set_read_timeout(Some(read_timeout))
-            .context("setting a timeout on the control socket")?;
+    fn new(stream: UnixStream, read_timeout: Duration) -> std::io::Result<Client> {
+        stream.set_read_timeout(Some(read_timeout))?;
         Ok(Client { stream })
+    }
+
+    /// Open a control socket, waiting up to `patience` for the daemon to
+    /// publish it, and put a time bound on every reply read. Zero patience
+    /// means "answer now", which is what status and stop want; starting a
+    /// sandbox and connecting to it are two steps, so a caller that just asked
+    /// for one has to wait.
+    pub fn connect(
+        path: PathBuf,
+        patience: Duration,
+        read_timeout: Duration,
+    ) -> Result<Client, ConnectError> {
+        let deadline = Instant::now() + patience;
+
+        loop {
+            match UnixStream::connect(&path) {
+                Ok(stream) => return Client::new(stream, read_timeout).map_err(ConnectError::Io),
+                Err(e) => {
+                    let missing = matches!(
+                        e.kind(),
+                        std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+                    );
+
+                    if !missing {
+                        return Err(ConnectError::Io(e));
+                    }
+
+                    if Instant::now() >= deadline {
+                        return Err(ConnectError::NotRunning);
+                    }
+
+                    std::thread::sleep(CONNECT_INTERVAL);
+                }
+            }
+        }
     }
 
     pub fn attach(mut self) -> Result<Attached> {

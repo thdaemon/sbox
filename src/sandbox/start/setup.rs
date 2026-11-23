@@ -75,14 +75,14 @@ impl Setup {
         // The daemon log is a host path, so it is opened before the mount tree.
         // The switch to it waits until the sandbox is up (see the child below),
         // so everything that fails during setup prints on the caller's terminal.
-        let output = Output::open(&self.config.state_dir());
+        let output = Output::open(&self.config.paths().state_dir());
 
         let host = HostEnv::snapshot();
 
         let lock = self.take_lock()?;
         let listener = self.publish_socket()?;
 
-        let dirs = self.config.dirs();
+        let paths = self.config.paths();
         let dbus = &self.config.sandbox.dbus;
 
         let (dbus_session, dbus_system) = if dbus.raw {
@@ -93,21 +93,23 @@ impl Setup {
 
         let (dbus_proxy_sockets, dbus_proxy_guard) = DbusProxy::new()
             .debug(dbus.debug)
-            .log(
-                dbus.debug
-                    .then(|| self.config.state_dir().join("xdg-dbus-proxy-debug.log")),
-            )
+            .log(dbus.debug.then(|| {
+                self.config
+                    .paths()
+                    .state_dir()
+                    .join("xdg-dbus-proxy-debug.log")
+            }))
             .session(dbus_session.map(|address| {
                 BusSpec::new(
                     address,
-                    dirs.dbus_proxy_session_socket(self.config.name()),
+                    paths.dbus_proxy_session_socket(),
                     dbus.session_rules(),
                 )
             }))
             .system(dbus_system.map(|address| {
                 BusSpec::new(
                     address,
-                    dirs.dbus_proxy_system_socket(self.config.name()),
+                    paths.dbus_proxy_system_socket(),
                     dbus.system_rules(),
                 )
             }))
@@ -137,7 +139,7 @@ impl Setup {
         unshare(CloneFlags::CLONE_NEWPID).context("creating the pid namespace")?;
 
         // Directory handles, so the sandbox can clean up after pivot_root().
-        let sock_dir_path = self.config.dirs().socket_dir(self.config.name());
+        let sock_dir_path = self.config.paths().socket_dir();
         let sock_dir = fs::FsNode::open(
             &sock_dir_path,
             libc::O_PATH | libc::O_DIRECTORY | libc::O_CLOEXEC,
@@ -361,23 +363,25 @@ impl Setup {
     /// lock -- is keyed by the name, so the lock lives in the directory the
     /// name keys.
     fn take_lock(&self) -> Result<std::fs::File, Fault> {
-        let dirs = self.config.dirs();
-        let root = dirs.socket_root();
-        let dir = dirs.socket_dir(self.config.name());
+        let paths = self.config.paths();
+        let lock_file = paths.lock_file();
 
-        // The runtime directories hold the control socket, so they must not be
-        // world-accessible even when something else created them first.
-        for path in [&root, &dir] {
-            std::fs::create_dir_all(path).with_context(|| format!("mkdir {}", path.display()))?;
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
-                .with_context(|| format!("chmod 0700 {}", path.display()))?;
-        }
+        let dir = lock_file
+            .parent()
+            .ok_or_else(|| Fault::Failed(anyhow::anyhow!("the lock file has no parent")))?;
+
+        // The runtime directory holds the control socket and the lock, so it
+        // must not be world-accessible even when something else created it
+        // first.
+        std::fs::create_dir_all(dir).with_context(|| format!("mkdir {}", dir.display()))?;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+            .with_context(|| format!("chmod 0700 {}", dir.display()))?;
 
         let lock = std::fs::OpenOptions::new()
             .create(true)
             .truncate(false)
             .write(true)
-            .open(dirs.lock_file(self.config.name()))
+            .open(lock_file)
             .context("opening the lock")?;
 
         if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
@@ -391,7 +395,7 @@ impl Setup {
     /// be replaced; one that answers belongs to a daemon started by an older
     /// sbox, which locked the sandbox directory instead.
     fn publish_socket(&self) -> Result<UnixListener, Fault> {
-        let path = self.config.dirs().control_socket(self.config.name());
+        let path = self.config.paths().control_socket();
         if path.exists() {
             match UnixStream::connect(&path) {
                 Ok(_) => return Err(Fault::Busy),

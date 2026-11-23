@@ -24,6 +24,13 @@ pub(crate) struct XdgDirs {
     runtime: PathBuf,
 }
 
+/// The paths of one sandbox inside the shared directories: the name keys the
+/// state and runtime files apart.
+pub(crate) struct SandboxPaths<'a> {
+    dirs: &'a XdgDirs,
+    name: &'a Name,
+}
+
 impl XdgDirs {
     /// Resolve the directories from the environment the caller handed sbox.
     pub fn from_env() -> XdgDirs {
@@ -105,37 +112,45 @@ impl XdgDirs {
             .join(format!("{name}.toml"))
     }
 
-    pub fn state_dir(&self, name: &str) -> PathBuf {
-        self.state.join("sbox").join(name)
-    }
-
     /// Where the per-sandbox runtime directories live: in the runtime
     /// directory, so they are never reachable from inside a sandbox.
     pub fn socket_root(&self) -> PathBuf {
         self.runtime.join("sbox")
     }
 
-    /// The runtime directory of one sandbox: its control socket, lock and dbus
-    /// proxy sockets.
-    pub fn socket_dir(&self, name: &Name) -> PathBuf {
-        self.socket_root().join(name.as_str())
+    /// The paths that belong to one sandbox.
+    pub fn paths<'a>(&'a self, name: &'a Name) -> SandboxPaths<'a> {
+        SandboxPaths { dirs: self, name }
+    }
+}
+
+impl SandboxPaths<'_> {
+    /// The state directory, where the daemon log lives.
+    pub fn state_dir(&self) -> PathBuf {
+        self.dirs.state.join("sbox").join(self.name.as_str())
     }
 
-    pub fn control_socket(&self, name: &Name) -> PathBuf {
-        self.socket_dir(name).join(CONTROL_SOCKET)
+    /// The runtime directory of this sandbox: its control socket, lock and
+    /// dbus proxy sockets.
+    pub fn socket_dir(&self) -> PathBuf {
+        self.dirs.socket_root().join(self.name.as_str())
+    }
+
+    pub fn control_socket(&self) -> PathBuf {
+        self.socket_dir().join(CONTROL_SOCKET)
     }
 
     /// The lock file that marks this sandbox name as taken.
-    pub fn lock_file(&self, name: &Name) -> PathBuf {
-        self.socket_dir(name).join(LOCK)
+    pub fn lock_file(&self) -> PathBuf {
+        self.socket_dir().join(LOCK)
     }
 
-    pub fn dbus_proxy_session_socket(&self, name: &Name) -> PathBuf {
-        self.socket_dir(name).join(DBUS_PROXY_SESSION_SOCKET)
+    pub fn dbus_proxy_session_socket(&self) -> PathBuf {
+        self.socket_dir().join(DBUS_PROXY_SESSION_SOCKET)
     }
 
-    pub fn dbus_proxy_system_socket(&self, name: &Name) -> PathBuf {
-        self.socket_dir(name).join(DBUS_PROXY_SYSTEM_SOCKET)
+    pub fn dbus_proxy_system_socket(&self) -> PathBuf {
+        self.socket_dir().join(DBUS_PROXY_SYSTEM_SOCKET)
     }
 }
 
@@ -165,7 +180,7 @@ mod tests {
             Path::new("/home/user/.config/sbox/sandbox.d/work.toml")
         );
         assert_eq!(
-            dirs.state_dir("work"),
+            dirs.paths(&name("work")).state_dir(),
             Path::new("/home/user/.local/state/sbox/work")
         );
     }
@@ -175,7 +190,7 @@ mod tests {
         let dirs = XdgDirs::under("/home/user");
         assert_eq!(dirs.socket_root(), Path::new("/home/user/run/sbox"));
         assert_eq!(
-            dirs.socket_dir(&name("work")),
+            dirs.paths(&name("work")).socket_dir(),
             Path::new("/home/user/run/sbox/work")
         );
     }
@@ -184,20 +199,21 @@ mod tests {
     fn runtime_files_live_below_the_sandbox_directory() {
         let dirs = XdgDirs::under("/home/user");
         let work = name("work");
+        let paths = dirs.paths(&work);
         assert_eq!(
-            dirs.control_socket(&work),
+            paths.control_socket(),
             Path::new("/home/user/run/sbox/work/sock")
         );
         assert_eq!(
-            dirs.lock_file(&work),
+            paths.lock_file(),
             Path::new("/home/user/run/sbox/work/lock")
         );
         assert_eq!(
-            dirs.dbus_proxy_session_socket(&work),
+            paths.dbus_proxy_session_socket(),
             Path::new("/home/user/run/sbox/work/dbus-session.sock")
         );
         assert_eq!(
-            dirs.dbus_proxy_system_socket(&work),
+            paths.dbus_proxy_system_socket(),
             Path::new("/home/user/run/sbox/work/dbus-system.sock")
         );
     }

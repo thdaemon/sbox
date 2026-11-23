@@ -6,12 +6,17 @@
 //! cli.rs parses the command line into Cmd, configuration turns it into the
 //! invocation's Config, and this module is the only place that knows how the
 //! pieces fit together: the control socket, the supervisor, and a session.
+//!
+//! Each command is its own item holding only the state it reads. Building the
+//! invocation is also what decides how much configuration a command needs:
+//! list works from the directories alone, stop and status add the name, and
+//! only run and attach resolve a sandbox's settings.
 
 mod client;
 
-use self::client::Client;
+use self::client::{Client, ConnectError};
 use crate::cli::{Cli, Cmd};
-use crate::config::Config;
+use crate::config::{BaseConfig, Config};
 use crate::linux::sys;
 use crate::name::Name;
 use crate::sandbox::{Launcher, Session};
@@ -37,8 +42,8 @@ const STATUS_TIMEOUT: Duration = Duration::from_secs(2);
 /// How long sbox stop waits for the control socket to disappear.
 const STOP_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// How often to look again while waiting for a socket to appear or vanish.
-const POLL_INTERVAL: Duration = Duration::from_millis(20);
+/// How often to look again while the stopped sandbox's socket disappears.
+const STOP_INTERVAL: Duration = Duration::from_millis(20);
 
 /// State of a running sandbox, as reported by its daemon over the control
 /// socket. A sandbox exists exactly as long as that socket answers, so there
@@ -53,68 +58,78 @@ struct Instance {
     sessions: Vec<u32>,
 }
 
-/// Why the control socket could not be reached. Only the first is worth
-/// retrying: the sandbox is still coming up.
-#[derive(Debug)]
-enum ConnectError {
-    NotRunning,
-    Io(std::io::Error),
-}
-
-impl ConnectError {
-    fn describe(self, name: &Name) -> anyhow::Error {
-        match self {
-            ConnectError::NotRunning => anyhow::anyhow!("sandbox '{name}' is not running"),
-            ConnectError::Io(e) => {
-                anyhow::Error::new(e).context(format!("connecting to sandbox '{name}'"))
-            }
-        }
-    }
-}
-
-/// The invocation: its configuration and the action to run.
-///
-/// Building it is the only place that knows the order the configuration is
-/// assembled in; every command is a method so nothing has to pass the
-/// configuration around again.
-pub(crate) struct App {
-    config: Config,
-    action: Cmd,
+/// The invocation, one item per command.
+pub(crate) enum App {
+    Run(Run),
+    Attach(Attach),
+    Stop(Stop),
+    Status(Status),
+    List(List),
 }
 
 impl App {
-    /// Assemble the invocation: read the configuration, teach it which
-    /// sandbox this is, overlay the command line, then check the result.
+    /// Assemble the invocation, resolving only the configuration its command
+    /// reads. This is the only place that knows the order the configuration is
+    /// assembled in.
     pub fn new(cli: Cli) -> Result<App> {
-        let mut config = Config::load()?;
+        let base = BaseConfig::load()?;
 
-        if let Some(name) = cli.sandbox_name() {
-            config.load_sandbox(name.clone())?;
-        }
+        Ok(match cli.action() {
+            Cmd::List => App::List(List { base }),
+            Cmd::Stop { name } => App::Stop(Stop {
+                base,
+                name: name.clone(),
+            }),
+            Cmd::Status { name, json } => App::Status(Status {
+                base,
+                name: name.clone(),
+                json: *json,
+            }),
+            Cmd::Run(args) => App::Run(Run {
+                config: Self::resolve(base, args.name.clone(), &cli)?,
+            }),
+            Cmd::Attach(args) => {
+                let config = Self::resolve(base, args.name.clone(), &cli)?;
+                let name = config.name.clone();
+                let command = config.sandbox.command.clone();
 
-        cli.apply(&mut config);
-
-        config.validate()?;
-
-        Ok(App {
-            config,
-            action: cli.into_action(),
+                App::Attach(Attach {
+                    base: config.into_base(),
+                    name,
+                    command,
+                })
+            }
         })
     }
 
     /// Run the command and report the exit status sbox should leave behind.
     pub fn execute(self) -> Result<i32> {
-        match &self.action {
-            Cmd::Run(_) => self.run(),
-            Cmd::Attach(_) => self.attach(),
-            Cmd::Stop { .. } => self.stop(),
-            Cmd::Status { json, .. } => self.status(*json),
-            Cmd::List => self.list(),
+        match self {
+            App::Run(command) => command.execute(),
+            App::Attach(command) => command.execute(),
+            App::Stop(command) => command.execute(),
+            App::Status(command) => command.execute(),
+            App::List(command) => command.execute(),
         }
     }
 
-    /// Create the sandbox if needed, then run a command in it.
-    fn run(&self) -> Result<i32> {
+    /// Read one sandbox's configuration, overlay the command line on it, and
+    /// check the result.
+    fn resolve(base: BaseConfig, name: Name, cli: &Cli) -> Result<Config> {
+        let mut config = base.load_sandbox(name)?;
+        cli.apply(&mut config);
+        config.validate()?;
+        Ok(config)
+    }
+}
+
+/// `run`: create the sandbox if needed, then run a command in it.
+pub(crate) struct Run {
+    config: Config,
+}
+
+impl Run {
+    fn execute(&self) -> Result<i32> {
         if self.config.verbose() {
             eprintln!("{:#?}", self.config);
         }
@@ -134,9 +149,13 @@ impl App {
                 return Ok(0);
             }
 
-            match self.connect(self.config.name(), START_PATIENCE) {
-                Ok(stream) => {
-                    let attached = Client::new(stream, HANDSHAKE_TIMEOUT)?
+            match Client::connect(
+                self.config.paths().control_socket(),
+                START_PATIENCE,
+                HANDSHAKE_TIMEOUT,
+            ) {
+                Ok(client) => {
+                    let attached = client
                         .attach()
                         .with_context(|| format!("sandbox '{}'", self.config.name()))?;
                     // The sandbox shares this terminal, warn before anything runs in it.
@@ -153,64 +172,104 @@ impl App {
             }
         }
     }
+}
 
-    /// Run a command in a sandbox that is already running.
-    fn attach(&self) -> Result<i32> {
-        if self.config.verbose() {
-            eprintln!("{:#?}", self.config);
+/// `attach`: run a command in a sandbox that is already running. Only the
+/// base, the name and the command matter here.
+#[derive(Debug)]
+pub(crate) struct Attach {
+    base: BaseConfig,
+    name: Name,
+    command: Vec<String>,
+}
+
+impl Attach {
+    fn execute(&self) -> Result<i32> {
+        if self.base.verbose {
+            eprintln!("{:#?}", self);
         }
 
-        // Without a command on the command line, this is the configured one.
-        let argv = self.config.sandbox.command.clone();
+        let client = Client::connect(
+            self.base.dirs.paths(&self.name).control_socket(),
+            Duration::ZERO,
+            HANDSHAKE_TIMEOUT,
+        )
+        .map_err(|e| e.describe(&self.name))?;
 
-        let stream = self
-            .connect(self.config.name(), Duration::ZERO)
-            .map_err(|e| e.describe(self.config.name()))?;
-
-        let attached = Client::new(stream, HANDSHAKE_TIMEOUT)?
+        let attached = client
             .attach()
-            .with_context(|| format!("sandbox '{}'", self.config.name()))?;
+            .with_context(|| format!("sandbox '{}'", self.name))?;
 
         // Joining a sandbox shares the terminal just as much as creating one.
-        warn_about_tiocsti(self.config.name());
+        warn_about_tiocsti(&self.name);
 
         let session = Session::join(attached.lease, attached.reply, attached.fds)?;
 
-        session.run(argv)
+        session.run(self.command.clone())
     }
+}
 
-    /// Stop the sandbox and wait for its control socket to go away.
-    fn stop(&self) -> Result<i32> {
-        let name = self.config.name();
+/// `stop`: retire a sandbox and wait for its control socket to go away.
+pub(crate) struct Stop {
+    base: BaseConfig,
+    name: Name,
+}
 
-        let stream = self
-            .connect(name, Duration::ZERO)
-            .map_err(|e| e.describe(name))?;
-        let mut client =
-            Client::new(stream, STOP_TIMEOUT).context("setting a timeout on the control socket")?;
+impl Stop {
+    fn execute(&self) -> Result<i32> {
+        let paths = self.base.dirs.paths(&self.name);
+
+        let mut client = Client::connect(paths.control_socket(), Duration::ZERO, STOP_TIMEOUT)
+            .map_err(|e| e.describe(&self.name))?;
 
         // The acknowledgement is best effort: the daemon unlinks its socket
         // and exits either way, and the loop below waits for that.
         let _ = client.stop();
 
         let deadline = Instant::now() + STOP_TIMEOUT;
-        while self.config.dirs().control_socket(name).exists() {
+        while paths.control_socket().exists() {
             if Instant::now() > deadline {
-                bail!("sandbox '{name}' did not stop");
+                bail!("sandbox '{}' did not stop", self.name);
             }
-            std::thread::sleep(POLL_INTERVAL);
+
+            std::thread::sleep(STOP_INTERVAL);
         }
 
-        println!("stopped {name}");
+        println!("stopped {}", self.name);
 
         Ok(0)
     }
+}
 
-    /// Show the state of one sandbox.
-    fn status(&self, json: bool) -> Result<i32> {
-        let instance = self.status_of(self.config.name())?;
+/// `status`: show the state of one sandbox.
+pub(crate) struct Status {
+    base: BaseConfig,
+    name: Name,
+    json: bool,
+}
 
-        if json {
+impl Status {
+    fn execute(&self) -> Result<i32> {
+        let mut client = Client::connect(
+            self.base.dirs.paths(&self.name).control_socket(),
+            Duration::ZERO,
+            STATUS_TIMEOUT,
+        )
+        .map_err(|e| e.describe(&self.name))?;
+
+        let reply = client
+            .status()
+            .with_context(|| format!("sandbox '{}'", self.name))?;
+
+        let instance = Instance {
+            name: self.name.clone(),
+            dir: reply.dir,
+            pid: reply.pid,
+            started: reply.started,
+            sessions: reply.sessions,
+        };
+
+        if self.json {
             println!(
                 "{}",
                 serde_json::to_string_pretty(&instance).context("formatting the sandbox state")?
@@ -228,12 +287,18 @@ impl App {
 
         Ok(0)
     }
+}
 
-    /// List the names of the sandboxes that answer on their socket.
-    fn list(&self) -> Result<i32> {
+/// `list`: print the names of the sandboxes that answer on their socket.
+pub(crate) struct List {
+    base: BaseConfig,
+}
+
+impl List {
+    fn execute(&self) -> Result<i32> {
         let mut names = Vec::new();
 
-        let Ok(entries) = std::fs::read_dir(self.config.dirs().socket_root()) else {
+        let Ok(entries) = std::fs::read_dir(self.base.dirs.socket_root()) else {
             return Ok(0);
         };
 
@@ -246,7 +311,7 @@ impl App {
                 continue;
             };
 
-            let socket = self.config.dirs().control_socket(&name);
+            let socket = self.base.dirs.paths(&name).control_socket();
             if UnixStream::connect(socket).is_ok() {
                 names.push(name);
             }
@@ -258,55 +323,6 @@ impl App {
         }
 
         Ok(0)
-    }
-
-    /// Ask one sandbox for its state.
-    fn status_of(&self, name: &Name) -> Result<Instance> {
-        let stream = self
-            .connect(name, Duration::ZERO)
-            .map_err(|e| e.describe(name))?;
-        let mut client = Client::new(stream, STATUS_TIMEOUT)
-            .context("setting a timeout on the control socket")?;
-
-        let reply = client
-            .status()
-            .with_context(|| format!("sandbox '{name}'"))?;
-
-        Ok(Instance {
-            name: name.clone(),
-            dir: reply.dir,
-            pid: reply.pid,
-            started: reply.started,
-            sessions: reply.sessions,
-        })
-    }
-
-    /// Open a control socket, waiting up to the given patience for the daemon
-    /// to publish it. Starting a sandbox and connecting to it are two steps,
-    /// so a caller that just asked for one has to wait; zero patience means
-    /// "answer now", which is what status and stop want.
-    fn connect(&self, name: &Name, patience: Duration) -> Result<UnixStream, ConnectError> {
-        let path = self.config.dirs().control_socket(name);
-        let deadline = Instant::now() + patience;
-
-        loop {
-            match UnixStream::connect(&path) {
-                Ok(stream) => return Ok(stream),
-                Err(e) => {
-                    let missing = matches!(
-                        e.kind(),
-                        std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
-                    );
-                    if !missing {
-                        return Err(ConnectError::Io(e));
-                    }
-                    if Instant::now() >= deadline {
-                        return Err(ConnectError::NotRunning);
-                    }
-                    std::thread::sleep(POLL_INTERVAL);
-                }
-            }
-        }
     }
 }
 

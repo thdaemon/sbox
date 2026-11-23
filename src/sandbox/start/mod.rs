@@ -39,7 +39,7 @@ impl<'a> Launcher<'a> {
         let sandbox_dir = self.config.sandbox_dir();
         std::fs::create_dir_all(&sandbox_dir)
             .with_context(|| format!("mkdir {}", sandbox_dir.display()))?;
-        std::fs::create_dir_all(self.config.state_dir())?;
+        std::fs::create_dir_all(self.config.paths().state_dir())?;
 
         let (readiness, watch) = channel()?;
 
@@ -76,7 +76,7 @@ impl<'a> Launcher<'a> {
                     Report::Timeout => bail!(
                         "sandbox '{}' did not start in time, maybe errors will be logged to {}",
                         self.config.name(),
-                        self.config.state_dir().join("daemon.log").display()
+                        self.config.paths().state_dir().join("daemon.log").display()
                     ),
                 }
             }

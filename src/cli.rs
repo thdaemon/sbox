@@ -223,7 +223,7 @@ pub(crate) struct RunArgs {
 pub(crate) struct AttachArgs {
     /// Sandbox name
     #[arg(value_name = "NAME", value_parser = parse_name)]
-    name: Name,
+    pub name: Name,
 
     /// Command to run inside the sandbox; everything after NAME, so a
     /// command that starts with "-" follows a "--"
@@ -243,18 +243,9 @@ impl Cli {
         <Cli as clap::Parser>::parse()
     }
 
-    pub fn sandbox_name(&self) -> Option<&Name> {
-        match &self.action {
-            Cmd::Run(args) => Some(&args.name),
-            Cmd::Attach(args) => Some(&args.name),
-            Cmd::Stop { name } | Cmd::Status { name, .. } => Some(name),
-            Cmd::List => None,
-        }
-    }
-
-    /// The action this invocation names, for the module that runs it.
-    pub fn into_action(self) -> Cmd {
-        self.action
+    /// The action this invocation names, for the module that builds it.
+    pub fn action(&self) -> &Cmd {
+        &self.action
     }
 
     fn run_args(&self) -> Option<&RunArgs> {
@@ -275,12 +266,10 @@ impl Cli {
         Some(argv).filter(|argv| !argv.is_empty())
     }
 
-    /// Overlay the command line on the configuration: flags win over the
+    /// Overlay the command line on the sandbox settings: flags win over the
     /// files, list-valued flags append. The caller checks the result.
     pub fn apply(&self, config: &mut Config) {
-        config.verbose = self.verbose;
-        config.keep = false;
-        config.no_attach = false;
+        config.base.verbose = self.verbose;
 
         if let Some(args) = self.run_args() {
             config.keep = args.keep;
@@ -393,10 +382,20 @@ mod tests {
         Cli::try_parse_from(std::iter::once("sbox").chain(args.iter().copied()))
     }
 
+    /// The name the command line gave, whichever command it is.
+    fn named(cli: &Cli) -> &Name {
+        match &cli.action {
+            Cmd::Run(args) => &args.name,
+            Cmd::Attach(args) => &args.name,
+            Cmd::Stop { name } | Cmd::Status { name, .. } => name,
+            Cmd::List => panic!("list names no sandbox"),
+        }
+    }
+
     #[test]
     fn run_takes_the_command_verbatim() {
         let cli = cli(&["run", "demo", "sh", "-c", "echo hi"]);
-        assert_eq!(cli.sandbox_name().unwrap().as_str(), "demo");
+        assert_eq!(named(&cli).as_str(), "demo");
         assert_eq!(cli.command().unwrap(), ["sh", "-c", "echo hi"]);
     }
 
@@ -414,7 +413,7 @@ mod tests {
     #[test]
     fn options_come_before_the_command() {
         let cli = cli(&["run", "-x", "-s", "/data", "--ro-share", "/srv", "demo"]);
-        assert_eq!(cli.sandbox_name().unwrap().as_str(), "demo");
+        assert_eq!(named(&cli).as_str(), "demo");
         assert!(cli.command().is_none());
     }
 
@@ -426,26 +425,26 @@ mod tests {
     #[test]
     fn attach_takes_only_the_command() {
         let cli = cli(&["attach", "demo", "--", "sh", "-c", "echo hi"]);
-        assert_eq!(cli.sandbox_name().unwrap().as_str(), "demo");
+        assert_eq!(named(&cli).as_str(), "demo");
         assert_eq!(cli.command().unwrap(), ["sh", "-c", "echo hi"]);
     }
 
     #[test]
     fn subcommands() {
-        assert!(matches!(cli(&["list"]).into_action(), Cmd::List));
-        match cli(&["stop", "demo"]).into_action() {
+        assert!(matches!(cli(&["list"]).action(), Cmd::List));
+        match cli(&["stop", "demo"]).action() {
             Cmd::Stop { name } => assert_eq!(name.as_str(), "demo"),
             other => panic!("{other:?}"),
         }
-        match cli(&["status", "demo"]).into_action() {
+        match cli(&["status", "demo"]).action() {
             Cmd::Status { name, json } => {
                 assert_eq!(name.as_str(), "demo");
-                assert!(!json);
+                assert!(!*json);
             }
             other => panic!("{other:?}"),
         }
-        match cli(&["status", "-j", "demo"]).into_action() {
-            Cmd::Status { json, .. } => assert!(json),
+        match cli(&["status", "-j", "demo"]).action() {
+            Cmd::Status { json, .. } => assert!(*json),
             other => panic!("{other:?}"),
         }
     }
@@ -479,7 +478,7 @@ mod tests {
 
     #[test]
     fn keep_and_no_attach() {
-        match cli(&["run", "-k", "--no-attach", "demo"]).into_action() {
+        match cli(&["run", "-k", "--no-attach", "demo"]).action() {
             Cmd::Run(args) => {
                 assert!(args.keep);
                 assert!(args.no_attach);
